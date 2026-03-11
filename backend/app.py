@@ -6,8 +6,7 @@ import re
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
-from google import genai
-from google.genai import types
+from groq import Groq
 from models import InventoryItem, get_session
 from datetime import datetime, timedelta
 
@@ -16,7 +15,7 @@ load_dotenv()
 app = Flask(__name__)
 CORS(app)
 
-client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
 SYSTEM_PROMPT = (
     "You are SnapChef, an AI kitchen assistant. "
@@ -40,14 +39,28 @@ def analyze():
         image_file = request.files['image']
         image_bytes = image_file.read()
         mime_type = image_file.content_type
-        response = client.models.generate_content(
-            model="gemini-2.0-flash-lite",
-            contents=[
-                types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
-                SYSTEM_PROMPT
+        image_base64 = base64.b64encode(image_bytes).decode('utf-8')
+
+        response = client.chat.completions.create(
+            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:{mime_type};base64,{image_base64}"}
+                        },
+                        {
+                            "type": "text",
+                            "text": SYSTEM_PROMPT
+                        }
+                    ]
+                }
             ]
         )
-        raw = response.text.strip()
+
+        raw = response.choices[0].message.content.strip()
         match = re.search(r'\{.*\}', raw, re.DOTALL)
         if match:
             result = json.loads(match.group())
@@ -86,6 +99,18 @@ def get_inventory():
         })
     session.close()
     return jsonify(result)
+
+@app.route('/inventory/<int:item_id>', methods=['DELETE'])
+def delete_inventory_item(item_id):
+    session = get_session()
+    item = session.query(InventoryItem).filter(InventoryItem.id == item_id).first()
+    if item:
+        session.delete(item)
+        session.commit()
+        session.close()
+        return jsonify({"message": "Item deleted"})
+    session.close()
+    return jsonify({"error": "Item not found"}), 404
 
 if __name__ == '__main__':
     app.run(debug=True)
